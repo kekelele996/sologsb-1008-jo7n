@@ -34,6 +34,56 @@ export interface VersionSnapshot {
   terms: TermBinding[];
 }
 
+export type GlossaryAction = "baseline" | "create" | "update" | "required" | "delete";
+
+export interface GlossaryTerm {
+  id: string;
+  source: string;
+  target: string;
+  language: string;
+  required: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GlossaryChange {
+  id: string;
+  termId: string;
+  source: string;
+  language: string;
+  action: GlossaryAction;
+  oldTarget: string;
+  newTarget: string;
+  oldRequired: boolean | null;
+  newRequired: boolean | null;
+  version: number;
+  createdAt: string;
+}
+
+export type TermReviewStatus = "pending" | "adopted" | "ignored";
+
+export interface TermReview {
+  id: string;
+  termId: string;
+  source: string;
+  language: string;
+  oldTarget: string;
+  newTarget: string;
+  required: boolean;
+  glossaryVersion: number;
+  signId: string;
+  status: TermReviewStatus;
+  createdAt: string;
+  decidedAt: string;
+}
+
+export interface ProjectGlossary {
+  version: number;
+  publishedAt: string;
+  terms: GlossaryTerm[];
+  changes: GlossaryChange[];
+}
+
 export interface SignItem {
   id: string;
   code: string;
@@ -56,11 +106,13 @@ export interface SignProject {
   location: string;
   activeSignId: string;
   signs: SignItem[];
+  glossary: ProjectGlossary;
+  termReviews: TermReview[];
   updatedAt: string;
 }
 
 export interface PersistedProject {
-  schema: 1;
+  schema: 2;
   project: SignProject;
 }
 

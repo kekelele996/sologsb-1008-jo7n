@@ -1,4 +1,13 @@
-import type { ReviewStatus, SignItem, SignProject, TermBinding } from "./types";
+import type {
+  GlossaryChange,
+  GlossaryTerm,
+  ProjectGlossary,
+  ReviewStatus,
+  SignItem,
+  SignProject,
+  TermBinding,
+  TermReview,
+} from "./types";
 
 export const uid = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -17,6 +26,89 @@ const term = (source: string, target: string, confirmed = false, required = true
   required,
   confirmed,
 });
+
+const GLOSSARY_BASELINE_AT = "2026-09-10T03:00:00.000Z";
+const GLOSSARY_V2_AT = "2026-09-25T08:00:00.000Z";
+
+function gterm(
+  id: string,
+  source: string,
+  target: string,
+  language: string,
+  required = true,
+): GlossaryTerm {
+  return { id, source, target, language, required, createdAt: GLOSSARY_BASELINE_AT, updatedAt: GLOSSARY_BASELINE_AT };
+}
+
+const seedGlossary = (): ProjectGlossary => {
+  const terms: GlossaryTerm[] = [
+    gterm("gterm-waiting", "候车区", "Waiting Area", "English"),
+    gterm("gterm-yellow", "黄线", "yellow line", "English"),
+    gterm("gterm-exit", "紧急出口", "Fire Exit", "English"),
+    gterm("gterm-elevator", "电梯", "elevator", "English"),
+    gterm("gterm-water", "直饮水", "飲料水", "日本語"),
+    gterm("gterm-sink", "水槽", "排水口", "日本語", false),
+    gterm("gterm-smoking", "禁止吸烟", "INTERDICTION DE FUMER", "Français"),
+    gterm("gterm-ecig", "电子烟", "Cigarettes électroniques", "Français", false),
+  ];
+
+  const baseline = (termId: string, source: string, language: string, target: string, required: boolean): GlossaryChange => ({
+    id: `gchg-base-${termId}`,
+    termId,
+    source,
+    language,
+    action: "baseline",
+    oldTarget: "",
+    newTarget: target,
+    oldRequired: null,
+    newRequired: required,
+    version: 1,
+    createdAt: GLOSSARY_BASELINE_AT,
+  });
+
+  const changes: GlossaryChange[] = [
+    {
+      id: "gchg-exit-v2",
+      termId: "gterm-exit",
+      source: "紧急出口",
+      language: "English",
+      action: "update",
+      oldTarget: "EMERGENCY EXIT",
+      newTarget: "Fire Exit",
+      oldRequired: null,
+      newRequired: null,
+      version: 2,
+      createdAt: GLOSSARY_V2_AT,
+    },
+    baseline("gterm-waiting", "候车区", "English", "Waiting Area", true),
+    baseline("gterm-yellow", "黄线", "English", "yellow line", true),
+    baseline("gterm-exit", "紧急出口", "English", "Fire Exit", true),
+    baseline("gterm-elevator", "电梯", "English", "elevator", true),
+    baseline("gterm-water", "直饮水", "日本語", "飲料水", true),
+    baseline("gterm-sink", "水槽", "日本語", "排水口", false),
+    baseline("gterm-smoking", "禁止吸烟", "Français", "INTERDICTION DE FUMER", true),
+    baseline("gterm-ecig", "电子烟", "Français", "Cigarettes électroniques", false),
+  ];
+
+  return { version: 2, publishedAt: GLOSSARY_V2_AT, terms, changes };
+};
+
+const seedReviews = (): TermReview[] => [
+  {
+    id: "rev-exit-fire",
+    termId: "gterm-exit",
+    source: "紧急出口",
+    language: "English",
+    oldTarget: "EMERGENCY EXIT",
+    newTarget: "Fire Exit",
+    required: true,
+    glossaryVersion: 2,
+    signId: "sign-exit",
+    status: "pending",
+    createdAt: GLOSSARY_V2_AT,
+    decidedAt: "",
+  },
+];
 
 export const createSeedProject = (): SignProject => {
   const signs: SignItem[] = [
@@ -59,7 +151,7 @@ export const createSeedProject = (): SignProject => {
       scenario: "公园服务亭",
       regulation: "城市公共设施双语标识译写规范",
       status: "changes",
-      terms: [term("直饮水", "飲料水"), term("水槽", "排水口")],
+      terms: [term("直饮水", "飲料水"), term("水槽", "排水口", false, false)],
       comments: [],
       versions: [],
       emergencyRevision: false,
@@ -74,7 +166,7 @@ export const createSeedProject = (): SignProject => {
       scenario: "医院入口",
       regulation: "公共场所卫生管理条例实施细则",
       status: "draft",
-      terms: [term("禁止吸烟", "INTERDICTION DE FUMER"), term("电子烟", "Cigarettes électroniques")],
+      terms: [term("禁止吸烟", "INTERDICTION DE FUMER"), term("电子烟", "Cigarettes électroniques", false, false)],
       comments: [],
       versions: [],
       emergencyRevision: false,
@@ -88,6 +180,8 @@ export const createSeedProject = (): SignProject => {
     location: "滨海交通枢纽一期",
     activeSignId: signs[0].id,
     signs,
+    glossary: seedGlossary(),
+    termReviews: seedReviews(),
     updatedAt: new Date().toISOString(),
   };
 };
