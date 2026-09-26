@@ -1,4 +1,14 @@
-import type { ReviewStatus, SignItem, SignProject, TermBinding } from "./types";
+import type {
+  GlossaryVersion,
+  ProjectGlossary,
+  ProjectTerm,
+  ReviewStatus,
+  SignItem,
+  SignProject,
+  TermAdjustmentRecord,
+  TermBinding,
+  TermReviewItem,
+} from "./types";
 
 export const uid = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -18,7 +28,173 @@ const term = (source: string, target: string, confirmed = false, required = true
   confirmed,
 });
 
+/** 项目词库条目：publishedTarget/publishedRequired 记录最近发布版本的固定译法 */
+const glossaryTerm = (
+  id: string,
+  source: string,
+  target: string,
+  language: string,
+  required = true,
+): ProjectTerm => {
+  return {
+    id,
+    source,
+    target,
+    language,
+    required,
+    createdAt: "2026-09-15T03:00:00.000Z",
+    updatedAt: "2026-09-15T03:00:00.000Z",
+    publishedTarget: target,
+    publishedRequired: required,
+  };
+};
+
+const glossaryHistory = (records: Array<Omit<TermAdjustmentRecord, "id" | "createdAt"> & { createdAt?: string }>): TermAdjustmentRecord[] =>
+  records.map((record, index) => ({
+    id: `gh-rec-${index + 1}`,
+    createdAt: record.createdAt ?? "2026-09-15T03:00:00.000Z",
+    ...record,
+  }));
+
+export const createSeedGlossary = (): { glossary: ProjectGlossary; reviews: TermReviewItem[] } => {
+  const terms: ProjectTerm[] = [
+    // v2 已发布、将“电梯”改为 lift；已确认标识 EM-02 尚未采用，挂着待复核
+    {
+      id: "gterm-elevator",
+      source: "电梯",
+      target: "lift",
+      language: "English",
+      required: true,
+      createdAt: "2026-09-15T03:00:00.000Z",
+      updatedAt: "2026-09-20T08:00:00.000Z",
+      publishedTarget: "lift",
+      publishedRequired: true,
+    },
+    glossaryTerm("gterm-emergency-exit", "紧急出口", "EMERGENCY EXIT", "English"),
+    glossaryTerm("gterm-waiting", "候车区", "Waiting Area", "English"),
+    // 尚未发布的草稿调整，发布时仅影响待确认标识，不产生待复核
+    {
+      id: "gterm-yellow-line",
+      source: "黄线",
+      target: "yellow safety line",
+      language: "English",
+      required: true,
+      createdAt: "2026-09-15T03:00:00.000Z",
+      updatedAt: "2026-09-25T01:30:00.000Z",
+      publishedTarget: "yellow line",
+      publishedRequired: true,
+    },
+    glossaryTerm("gterm-drinking", "直饮水", "飲料水", "日本語"),
+    {
+      id: "gterm-sink",
+      source: "水槽",
+      target: "排水口",
+      language: "日本語",
+      required: false,
+      createdAt: "2026-09-15T03:00:00.000Z",
+      updatedAt: "2026-09-15T03:00:00.000Z",
+      publishedTarget: "排水口",
+      publishedRequired: false,
+    },
+    glossaryTerm("gterm-smoking", "禁止吸烟", "INTERDICTION DE FUMER", "Français"),
+  ];
+
+  const versions: GlossaryVersion[] = [
+    {
+      version: 2,
+      label: "词库 v2",
+      note: "按译写规范将“电梯”统一为英式固定译法 lift。",
+      publishedAt: "2026-09-20T08:00:00.000Z",
+      termCount: 7,
+      requiredCount: 6,
+    },
+    {
+      version: 1,
+      label: "词库 v1",
+      note: "初版项目术语，按语种录入固定译法与必选标记。",
+      publishedAt: "2026-09-15T03:00:00.000Z",
+      termCount: 7,
+      requiredCount: 6,
+    },
+  ];
+
+  const history: TermAdjustmentRecord[] = glossaryHistory([
+    {
+      termId: "gterm-elevator",
+      source: "电梯",
+      language: "English",
+      action: "publish",
+      note: "发布词库 v2，收录 7 条术语。",
+      version: 2,
+      createdAt: "2026-09-20T08:00:00.000Z",
+    },
+    {
+      termId: "gterm-elevator",
+      source: "电梯",
+      language: "English",
+      action: "target",
+      oldValue: "elevator",
+      newValue: "lift",
+      note: "固定译法调整：elevator → lift（随 v2 发布）。",
+      version: 2,
+      createdAt: "2026-09-20T08:00:00.000Z",
+    },
+    {
+      termId: "gterm-yellow-line",
+      source: "黄线",
+      language: "English",
+      action: "target",
+      oldValue: "yellow line",
+      newValue: "yellow safety line",
+      note: "草稿调整：等待发布词库 v3。",
+      version: 0,
+      createdAt: "2026-09-25T01:30:00.000Z",
+    },
+    {
+      termId: "gterm-sink",
+      source: "水槽",
+      language: "日本語",
+      action: "create",
+      newValue: "排水口",
+      note: "新增可选术语（非必选标记）。",
+      version: 1,
+      createdAt: "2026-09-15T03:00:00.000Z",
+    },
+    {
+      termId: "gterm-elevator",
+      source: "电梯",
+      language: "English",
+      action: "publish",
+      note: "发布词库 v1，收录 7 条术语。",
+      version: 1,
+      createdAt: "2026-09-15T03:00:00.000Z",
+    },
+  ]);
+
+  const reviews: TermReviewItem[] = [
+    {
+      id: "review-elevator-exit",
+      termId: "gterm-elevator",
+      signId: "sign-exit",
+      source: "电梯",
+      language: "English",
+      oldTarget: "elevator",
+      newTarget: "lift",
+      required: true,
+      fromVersion: 2,
+      status: "pending",
+      createdAt: "2026-09-20T08:00:00.000Z",
+    },
+  ];
+
+  return {
+    glossary: { terms, currentVersion: 2, versions, history, dirty: true },
+    reviews,
+  };
+};
+
 export const createSeedProject = (): SignProject => {
+  const { glossary, reviews } = createSeedGlossary();
   const signs: SignItem[] = [
     {
       id: "sign-platform",
@@ -88,6 +264,8 @@ export const createSeedProject = (): SignProject => {
     location: "滨海交通枢纽一期",
     activeSignId: signs[0].id,
     signs,
+    glossary,
+    termReviews: reviews,
     updatedAt: new Date().toISOString(),
   };
 };

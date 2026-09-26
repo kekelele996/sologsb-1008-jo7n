@@ -1,10 +1,27 @@
 import { $, component$, useSignal, useVisibleTask$, type QRL } from "@builder.io/qwik";
 import { type DocumentHead } from "@builder.io/qwik-city";
 import { createSeedProject, STATUS_LABELS, uid } from "../data";
-import type { ReviewStatus, SignItem, SignProject } from "../types";
+import { GlossaryPanel } from "../components/glossary-panel";
+import { ReviewsPanel } from "../components/reviews-panel";
+import type { ProjectTerm, ReviewStatus, SignItem, SignProject } from "../types";
+import {
+  addGlossaryTerm,
+  adoptTermReview,
+  dismissTermReview,
+  findSign,
+  pendingReviewCount,
+  pendingReviewsForSign,
+  publishGlossary,
+  removeGlossaryTerm,
+  renderContains,
+  replaceFirstOccurrence,
+  updateGlossaryRequired,
+  updateGlossaryTarget,
+} from "../glossary";
 import { analyzeSign, cloneTerms, diffText } from "../utils";
 
-const STORAGE_KEY = "sologsb-1008-project-v1";
+const STORAGE_KEY = "sologsb-1008-project-v2";
+const LEGACY_STORAGE_KEY = "sologsb-1008-project-v1";
 const WIDTHS = [320, 480, 720, 960] as const;
 
 export const head: DocumentHead = {
@@ -38,7 +55,28 @@ export default component$(() => {
   const toast = useSignal("");
   const previewId = useSignal("");
   const readOnly = useSignal(false);
+  const glossaryOpen = useSignal(false);
+  const reviewsOpen = useSignal(false);
   const active = () => project.value.signs.find((sign) => sign.id === (previewId.value || project.value.activeSignId)) ?? project.value.signs[0];
+
+  /** 当前标识对照项目词库缺失的必选固定译法 */
+  const missingGlossaryTerms = (sign: SignItem) =>
+    project.value.glossary.terms.filter(
+      (term) =>
+        term.required &&
+        term.language === sign.targetLanguage &&
+        !renderContains(sign.targetText, term.target),
+    );
+
+  /** 当前标识中仍使用旧译法（已发布版本与现词库不一致）的词库条目 */
+  const outdatedGlossaryTerms = (sign: SignItem) =>
+    project.value.glossary.terms.filter(
+      (term) =>
+        term.language === sign.targetLanguage &&
+        term.publishedTarget !== undefined &&
+        term.publishedTarget !== term.target &&
+        renderContains(sign.targetText, term.publishedTarget),
+    );
 
   const commit = $((label: string, update: (draft: SignProject) => void) => {
     past.value = [...past.value.slice(-49), structuredClone(project.value)];
@@ -166,6 +204,85 @@ export default component$(() => {
     replyingTo.value = "";
   });
 
+  const createGlossaryTerm = $((source: string, target: string, language: string, required: boolean) => {
+    commit("新增项目术语", (draft) => {
+      const created = addGlossaryTerm(draft, { source, target, language, required });
+      toast.value = created ? "术语已加入词库草稿，发布后生效" : "该语言下已存在相同术语";
+    });
+  });
+
+  const saveGlossaryEdit = $((termId: string, target: string, required: boolean) => {
+    commit("调整项目术语", (draft) => {
+      updateGlossaryTarget(draft, termId, target);
+      updateGlossaryRequired(draft, termId, required);
+    });
+  });
+
+  const deleteGlossaryTerm = $((termId: string) => {
+    commit("删除项目术语", (draft) => {
+      removeGlossaryTerm(draft, termId);
+      toast.value = "术语已删除，发布词库后生效";
+    });
+  });
+
+  const publishGlossaryVersion = $((note: string) => {
+    commit("发布词库新版本", (draft) => {
+      const version = publishGlossary(draft, note);
+      const count = pendingReviewCount(draft);
+      toast.value = version
+        ? `词库 v${version} 已发布${count ? `，${count} 条已确认标识需复核` : ""}`
+        : "当前没有可发布的调整";
+    });
+  });
+
+  const adoptReview = $((reviewId: string) => {
+    commit("采用术语新译法", (draft) => {
+      const adopted = adoptTermReview(draft, reviewId);
+      if (adopted) {
+        draft.activeSignId = adopted.signId;
+        selectedVersionId.value = draft.signs.find((sign) => sign.id === adopted.signId)?.versions[0]?.id ?? "";
+        toast.value = "已采用新译法，标识回到待确认，快照已生成";
+      }
+    });
+  });
+
+  const dismissReview = $((reviewId: string) => {
+    commit("保留标识旧译法", (draft) => {
+      dismissTermReview(draft, reviewId);
+      toast.value = "已保留旧译法，待复核项关闭";
+    });
+  });
+
+  const selectSign = $((signId: string) => {
+    commit("切换标识", (draft) => { draft.activeSignId = signId; });
+    selectedVersionId.value = "";
+  });
+
+  /** 非已确认标识可一键套用项目词库固定译法（已确认标识走待复核流程） */
+  const applyGlossaryTarget = $((term: ProjectTerm) => {
+    const current = findSign(project.value, project.value.activeSignId);
+    if (!current) return;
+    if (current.status === "confirmed") {
+      reviewsOpen.value = true;
+      return;
+    }
+    const oldTarget = term.publishedTarget ?? "";
+    updateActive("套用项目词库译法", (draftSign) => {
+      if (oldTarget) {
+        draftSign.targetText = replaceFirstOccurrence(draftSign.targetText, oldTarget, term.target);
+        const bound = draftSign.terms.find(
+          (binding) =>
+            binding.source === term.source &&
+            binding.target.toLocaleLowerCase() === oldTarget.toLocaleLowerCase(),
+        );
+        if (bound) bound.target = term.target;
+      } else if (!renderContains(draftSign.targetText, term.target)) {
+        draftSign.terms.push({ id: uid("term"), source: term.source, target: term.target, required: term.required, confirmed: false });
+      }
+      draftSign.status = "pending";
+    });
+  });
+
   const sharePreview: QRL<() => void> = $(() => {
     const current = project.value.signs.find((item) => item.id === project.value.activeSignId);
     if (!current) return;
@@ -185,8 +302,23 @@ export default component$(() => {
     track(() => hydrated.value);
     if (!hydrated.value) {
       try {
-        const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "") as { schema: number; project: SignProject };
-        if (stored.schema === 1 && stored.project?.signs?.length) project.value = stored.project;
+        const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "") as
+          | { schema: number; project: SignProject }
+          | null;
+        if (stored?.schema === 2 && stored.project?.signs?.length && stored.project.glossary) {
+          project.value = stored.project;
+        } else {
+          // 兼容 v1 数据：补齐空项目词库与待复核队列
+          const legacy = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) ?? "") as
+            | { schema: number; project: SignProject }
+            | null;
+          if (legacy?.schema === 1 && legacy.project?.signs?.length) {
+            const migrated = legacy.project;
+            migrated.glossary = { terms: [], currentVersion: 0, versions: [], history: [], dirty: false };
+            migrated.termReviews = [];
+            project.value = migrated;
+          }
+        }
         const requestedPreview = new URLSearchParams(window.location.search).get("preview") ?? "";
         previewId.value = requestedPreview;
         readOnly.value = Boolean(requestedPreview);
@@ -202,7 +334,7 @@ export default component$(() => {
     if (!hydrated.value) return;
     track(() => project.value);
     const timer = window.setTimeout(() => {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ schema: 1, project: project.value }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ schema: 2, project: project.value }));
     }, 450);
     cleanup(() => window.clearTimeout(timer));
   });
@@ -292,6 +424,18 @@ export default component$(() => {
         </div>
         <div class="navbar-end gap-2">
           <span class={`badge ${online.value ? "badge-success" : "badge-warning"} badge-outline`}>{online.value ? "在线" : "离线草稿"}</span>
+          <button class="btn btn-sm border-white/20 bg-white/10 text-white hover:bg-white/20" onClick$={() => (glossaryOpen.value = true)}>
+            项目术语库
+            <span class="badge badge-xs badge-ghost">{project.value.glossary.currentVersion === 0 ? "未发布" : `v${project.value.glossary.currentVersion}`}</span>
+            {project.value.glossary.dirty && <span class="badge badge-xs badge-warning">草稿</span>}
+          </button>
+          <button
+            class={`btn btn-sm ${pendingReviewCount(project.value) ? "btn-error" : "border-white/20 bg-white/10 text-white hover:bg-white/20"}`}
+            onClick$={() => (reviewsOpen.value = true)}
+          >
+            待复核
+            <span class="badge badge-xs badge-ghost">{pendingReviewCount(project.value)}</span>
+          </button>
           <button class="btn btn-ghost btn-sm" disabled={!past.value.length} onClick$={undo}>撤销</button>
           <button class="btn btn-ghost btn-sm" disabled={!future.value.length} onClick$={redo}>重做</button>
           <button class="btn btn-sm border-white/20 bg-white/10 text-white hover:bg-white/20" onClick$={sharePreview}>复制只读链接</button>
@@ -311,13 +455,25 @@ export default component$(() => {
       <div class="grid min-h-[calc(100vh-64px)] grid-cols-[270px_minmax(560px,1fr)_430px] gap-px bg-slate-300">
         <aside class="overflow-y-auto bg-slate-50 p-3">
           <div class="mb-3 rounded-xl bg-white p-4 shadow-sm">
-            <div class="text-xs font-bold uppercase tracking-[0.16em] text-slate-400">标识清单</div>
-            <div class="mt-1 text-lg font-bold text-slate-800">{project.value.signs.length} 处标识</div>
+            <div class="flex items-start justify-between">
+              <div>
+                <div class="text-xs font-bold uppercase tracking-[0.16em] text-slate-400">标识清单</div>
+                <div class="mt-1 text-lg font-bold text-slate-800">{project.value.signs.length} 处标识</div>
+              </div>
+              <button
+                class={`badge gap-1 ${pendingReviewCount(project.value) ? "badge-error cursor-pointer" : "badge-ghost"}`}
+                title="查看词库新译法与已确认标识的待复核"
+                onClick$={() => pendingReviewCount(project.value) && (reviewsOpen.value = true)}
+              >
+                待复核 {pendingReviewCount(project.value)}
+              </button>
+            </div>
             <p class="mt-1 text-xs leading-5 text-slate-500">{project.value.location}</p>
           </div>
           <div class="space-y-2">
             {project.value.signs.map((sign, index) => {
               const risk = analyzeSign(sign, previewWidth.value, previewFont.value);
+              const signReviews = pendingReviewsForSign(project.value, sign.id);
               return (
                 <button
                   key={sign.id}
@@ -338,6 +494,12 @@ export default component$(() => {
                       {risk.risk === "high" ? "高风险" : risk.risk === "medium" ? "需留意" : "版面正常"}
                     </span>
                   </div>
+                  {signReviews.length > 0 && (
+                    <div class="mt-2 flex items-center gap-1 rounded-md bg-red-50 px-2 py-1 text-[11px] font-bold text-red-600">
+                      <span>!</span>
+                      <span>{signReviews.length} 条词库新译法待复核</span>
+                    </div>
+                  )}
                   <span class="sr-only">第 {index + 1} 条</span>
                 </button>
               );
@@ -361,6 +523,27 @@ export default component$(() => {
           </div>
 
           <div class="space-y-5 p-6">
+            {pendingReviewsForSign(project.value, active().id).length > 0 && (
+              <section class="alert alert-error flex-wrap items-start py-3">
+                <span class="text-lg">!</span>
+                <div class="min-w-0 flex-1">
+                  <div class="text-sm font-bold">
+                    该已确认标识有 {pendingReviewsForSign(project.value, active().id).length} 条词库新译法待复核
+                  </div>
+                  <p class="mt-0.5 text-xs opacity-90">新译法不会自动改译文，请逐条采用；采用后标识回到待确认并生成版本快照。</p>
+                  <div class="mt-2 flex flex-wrap gap-2">
+                    {pendingReviewsForSign(project.value, active().id).map((review) => (
+                      <span key={review.id} class="badge badge-sm bg-white/20 text-white">
+                        v{review.fromVersion}：{review.source}
+                        <span class="line-through">{review.oldTarget}</span> → {review.newTarget}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <button class="btn btn-sm bg-white text-error" onClick$={() => (reviewsOpen.value = true)}>前往逐条复核</button>
+              </section>
+            )}
+
             <section class="card border border-slate-200 bg-white shadow-sm">
               <div class="card-body gap-4 p-5">
                 <div class="flex items-center justify-between">
@@ -421,14 +604,66 @@ export default component$(() => {
                     );
                   })}
                 </div>
+                {(() => {
+                  const sign = active();
+                  const missing = missingGlossaryTerms(sign);
+                  const outdated = outdatedGlossaryTerms(sign);
+                  if (!missing.length && !outdated.length) return null;
+                  return (
+                    <div class="rounded-xl border border-amber-300 bg-amber-50 p-3">
+                      <div class="flex items-center justify-between">
+                        <div class="text-xs font-bold text-amber-800">项目术语库对照（按 {sign.targetLanguage}）</div>
+                        <button class="btn btn-xs btn-ghost" onClick$={() => (glossaryOpen.value = true)}>管理词库</button>
+                      </div>
+                      <div class="mt-2 flex flex-wrap gap-2">
+                        {outdated.map((gterm) => {
+                          const isConfirmed = sign.status === "confirmed";
+                          const pending = pendingReviewsForSign(project.value, sign.id).some(
+                            (review) => review.termId === gterm.id,
+                          );
+                          return (
+                            <button
+                              key={`old-${gterm.id}`}
+                              class={`badge badge-lg gap-1 ${isConfirmed ? "badge-error" : "badge-warning"}`}
+                              title={isConfirmed ? "已确认标识：打开待复核队列由审校员采用" : "一键把旧译法替换为词库现译法"}
+                              onClick$={() => (isConfirmed ? (reviewsOpen.value = true) : applyGlossaryTarget(gterm))}
+                            >
+                              {gterm.source}：<span class="line-through">{gterm.publishedTarget}</span> → {gterm.target}
+                              {isConfirmed ? (pending ? "（待复核）" : "（打开复核队列）") : "（点击套用）"}
+                            </button>
+                          );
+                        })}
+                        {missing.map((gterm) => (
+                          <button
+                            key={`missing-${gterm.id}`}
+                            class="badge badge-lg badge-outline gap-1 border-amber-500 text-amber-800"
+                            title={sign.status === "confirmed" ? "已确认标识需经审校流程补充" : "在该标识绑定此必选术语"}
+                            onClick$={() => updateActive("补绑项目必选术语", (draft) => {
+                              draft.terms.push({ id: uid("term"), source: gterm.source, target: gterm.target, required: true, confirmed: false });
+                              draft.status = "pending";
+                            })}
+                          >
+                            缺必选 {gterm.source} → {gterm.target}（点击绑定）
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </section>
 
             <section class="card border border-slate-200 bg-white shadow-sm">
               <div class="card-body p-5">
                 <div class="flex items-center justify-between">
-                  <div><h2 class="font-bold">术语绑定</h2><p class="text-xs text-slate-500">必选术语未出现在译文中时会实时告警。</p></div>
-                  <span class="badge badge-outline">{active().terms.length} 条</span>
+                  <div><h2 class="font-bold">术语绑定</h2><p class="text-xs text-slate-500">必选术语未出现在译文中时会实时告警；项目术语库在顶部“项目术语库”统一维护。</p></div>
+                  <div class="flex items-center gap-2">
+                    <button class="btn btn-xs btn-outline" onClick$={() => (glossaryOpen.value = true)}>
+                      打开项目词库
+                      {project.value.glossary.dirty && <span class="badge badge-xs badge-warning">草稿</span>}
+                    </button>
+                    <span class="badge badge-outline">{active().terms.length} 条</span>
+                  </div>
                 </div>
                 <div class="mt-4 grid grid-cols-[1fr_1fr_auto] gap-2">
                   <input class="input input-sm input-bordered" placeholder="中文术语" value={termSource.value} onInput$={(_, element) => termSource.value = element.value} />
@@ -514,7 +749,7 @@ export default component$(() => {
                 <div class="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
                   <div class="rounded-lg bg-slate-100 p-2"><strong class="block text-lg">{preview().lines.length}</strong><span>预计行数</span></div>
                   <div class="rounded-lg bg-slate-100 p-2"><strong class="block text-lg">{active().targetText.length}</strong><span>字符数</span></div>
-                  <div class="rounded-lg bg-slate-100 p-2"><strong class={`block text-lg ${preview().missingTerms.length ? "text-error" : "text-success"}`}>{preview().missingTerms.length}</strong><span>缺失术语</span></div>
+                  <div class="rounded-lg bg-slate-100 p-2"><strong class={`block text-lg ${preview().missingTerms.length || missingGlossaryTerms(active()).length ? "text-error" : "text-success"}`}>{preview().missingTerms.length + missingGlossaryTerms(active()).length}</strong><span>缺失术语</span></div>
                 </div>
                 {(preview().overflow || preview().tooLong) && <div class="alert alert-error mt-3 py-2 text-xs">{preview().overflow ? "当前字号下内容超过三行，可能截断。" : "译文接近标识建议字符上限。"}</div>}
               </div>
@@ -551,6 +786,22 @@ export default component$(() => {
           </section>
         </aside>
       </div>
+
+      <GlossaryPanel
+        open={glossaryOpen}
+        project={project}
+        onAdd$={createGlossaryTerm}
+        onSaveEdit$={saveGlossaryEdit}
+        onDelete$={deleteGlossaryTerm}
+        onPublish$={publishGlossaryVersion}
+      />
+      <ReviewsPanel
+        open={reviewsOpen}
+        project={project}
+        onAdopt$={adoptReview}
+        onDismiss$={dismissReview}
+        onSelectSign$={selectSign}
+      />
 
       {toast.value && <div class="toast toast-end z-50"><div class="alert alert-success"><span>{toast.value}</span></div></div>}
     </div>
